@@ -9,6 +9,8 @@ use App\Models\Invoice;
 use App\Models\File;
 use Log;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Bus;
+use App\Jobs\ProcessFile;
 
 class FileService {
     public function __construct(
@@ -22,42 +24,30 @@ class FileService {
     }
 
    public function executeFile(UploadedFile $file): string {
+       set_time_limit(0);
+
        $path = $file->getRealPath();
 
        if (file_exists($path)) {
-
             $filename = $file->getClientOriginalName();
             $lines = 0;
-            $skipHeader = true;
-            $file_handle = fopen($file, 'r');
-            while ($csvRow = fgetcsv($file_handle, null)) {
-                $lines = $lines + 1;            
-                if ($skipHeader) {
-                    $skipHeader = false;
-                    continue;
-                }            
-                $name = $csvRow[0];
-                $governmentId = $csvRow[1];
-                $email = $csvRow[2];
-                $debtAmount = $csvRow[3];
-                $debtDueDate = $csvRow[4];
-                $debtId = $csvRow[5];
-                try{
-                    $invoice = Invoice::create(
-                    [
-                        'name' => $name,
-                        'governmentId' => $governmentId,
-                        'email' => $email,
-                        'debtAmount' => $debtAmount,
-                        'debtDueDate' => $debtDueDate,
-                        'debtId' => $debtId
-                    ]);
-                    
-                } catch (\Exception $e) {
-                    Log::error("Error creating debt: [debtIdid::{$debtId}] with message ". $e->getMessage());
+
+            $data = file($file);
+            $lines = count($data);
+            $chunks = array_chunk($data, 5000);
+
+            $header = [];
+            $batch  = Bus::batch([])->name('files')->onQueue('files')->dispatch();
+    
+            foreach ($chunks as $key => $chunk) {
+                $data = array_map('str_getcsv', $chunk);
+    
+                if ($key === 0) {
+                    $header = $data[0];
+                    unset($data[0]);
                 }
-            }
-            fclose($file_handle);
+                $batch->add(new ProcessFile($data, $header));
+            }            
 
             $file = File::create(
             [
@@ -74,7 +64,6 @@ class FileService {
                 'status' => false,
             ], 404);
        }
-
    }
 
     public function batch(array $data): void {
